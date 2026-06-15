@@ -9,12 +9,29 @@ def setup_directories():
     os.makedirs(os.path.join(base_dir, "data", "processed"), exist_ok=True)
 
 def fetch_cpi_data(start_date, end_date):
-    # Fetch US Consumer Price Index directly from FRED CSV endpoint.
-    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL"
-    cpi_data = pd.read_csv(url)
-    cpi_data.rename(columns={'observation_date': 'date', 'CPIAUCSL': 'cpi'}, inplace=True)
-    cpi_data['date'] = pd.to_datetime(cpi_data['date'])
-    cpi_data = cpi_data[(cpi_data['date'] >= start_date) & (cpi_data['date'] <= end_date)]
+    # Fetch US Consumer Price Index series directly from FRED CSV endpoint.
+    series_ids = {
+        'CPIAUCSL': 'cpi',
+        'CPIUFDSL': 'cpi_food',
+        'CPIENGSL': 'cpi_energy',
+        'CUSR0000SETA02': 'cpi_vehicles',
+        'CPILFESL': 'cpi_core'
+    }
+    
+    cpi_df = pd.DataFrame()
+    for series, name in series_ids.items():
+        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
+        temp_df = pd.read_csv(url)
+        temp_df.rename(columns={'observation_date': 'date', series: name}, inplace=True)
+        temp_df['date'] = pd.to_datetime(temp_df['date'])
+        
+        if cpi_df.empty:
+            cpi_df = temp_df
+        else:
+            cpi_df = pd.merge(cpi_df, temp_df, on='date', how='outer')
+            
+    cpi_data = cpi_df[(cpi_df['date'] >= start_date) & (cpi_df['date'] <= end_date)].copy()
+    
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
     cpi_data.to_csv(os.path.join(base_dir, "cpi_data.csv"), index=False)
@@ -51,8 +68,12 @@ def process_data(cpi_df, gscpi_df):
     # Merge datasets on the date column.
     merged_df = pd.merge(cpi_df, gscpi_df, on='date', how='inner')
     
-    # Calculate Year-over-Year (YoY) percentage change for CPI to represent inflation rate.
-    merged_df['cpi_yoy'] = merged_df['cpi'].pct_change(periods=12) * 100
+    # Calculate Year-over-Year (YoY) percentage change for all CPI columns
+    cpi_cols = ['cpi', 'cpi_food', 'cpi_energy', 'cpi_vehicles', 'cpi_core']
+    for col in cpi_cols:
+        merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce')
+        merged_df[f'{col}_yoy'] = merged_df[col].pct_change(periods=12) * 100
+        
     merged_df.dropna(inplace=True)
     
     import os
