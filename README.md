@@ -15,6 +15,21 @@ It mathematically proves that the Global Supply Chain Pressure Index (GSCPI) act
 ## Architecture & Data Pipeline
 This project is built for enterprise-grade automation:
 
+```mermaid
+graph TD;
+    A[Federal Reserve API <br> CPI Data] -->|Python requests| C(data_pipeline.py);
+    B[NY Fed <br> GSCPI Excel] -->|pandas read_excel| C;
+    C -->|Merge & Clean| D[(merged_data_for_bi.csv)];
+    D --> E[app.py <br> Streamlit Dashboard];
+    D --> F[statistical_analysis.py <br> Granger Causality];
+    D --> G[forecast_model.py <br> VAR ML Model];
+    G -->|Forecast Output| H[(forecast_data.csv)];
+    H --> E;
+    
+    I((GitHub Actions <br> Cron Job)) -.->|Runs on 5th of Month| C;
+    D -.->|Live Connection URL| J[Power BI Desktop];
+```
+
 1. **Automated Data Sourcing:** 
    * Fetches real-time, granular CPI sub-indices directly from the Federal Reserve Economic Data (FRED) API.
    * Fetches the GSCPI directly from the New York Federal Reserve.
