@@ -1,85 +1,102 @@
-import os
 from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.dml.color import RGBColor
+import os
 
 def create_presentation():
-    # Load the user's provided template
-    template_path = r"C:\Users\athar\OneDrive - MSFT\Documents\UIUC SEM 3\ABR\Salud Revenue Partners x BIG.pptx"
-    
-    try:
-        prs = Presentation(template_path)
-    except Exception as e:
-        print(f"Could not load template: {e}")
-        prs = Presentation() # fallback
+    # Use the default, clean PowerPoint template
+    prs = Presentation()
 
-    # Use the first available layout (usually the master theme background)
-    layout = prs.slide_layouts[0]
+    # Title Slide (Layout 0)
+    title_slide_layout = prs.slide_layouts[0]
+    slide = prs.slides.add_slide(title_slide_layout)
+    title = slide.shapes.title
+    subtitle = slide.placeholders[1]
+    title.text = "Supply Chain Pressure vs. Inflation"
+    subtitle.text = "A Predictive Machine Learning Analysis\nBy Atharva Sathaye"
 
-    def add_slide_with_content(title_text, bullet_points):
-        slide = prs.slides.add_slide(layout)
-        
-        # We delete default placeholders from this layout to ensure a clean slate 
-        # while keeping the template's background/theme
-        for sp in slide.shapes:
-            sp.element.getparent().remove(sp.element)
-        
-        # Add Title Box
-        title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
-        tf = title_box.text_frame
-        p = tf.add_paragraph()
-        p.text = title_text
-        p.font.size = Pt(36)
-        p.font.bold = True
-        
-        # Add Content Box
-        body_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.8), Inches(9), Inches(5))
-        tf_body = body_box.text_frame
-        tf_body.word_wrap = True
-        
-        for pt in bullet_points:
-            p = tf_body.add_paragraph()
-            p.text = pt
-            p.font.size = Pt(24)
-            p.space_after = Pt(14)
-            
-    # Slide 1: Title
-    add_slide_with_content("Supply Chain Pressure vs. Inflation", ["A Predictive Machine Learning Analysis", "Ready for Client Presentation"])
+    # Bullet Slide Layout (Layout 1)
+    bullet_slide_layout = prs.slide_layouts[1]
 
-    # Slide 2: Introduction
-    add_slide_with_content("Introduction & Business Goal", [
-        "The global economy is highly interconnected.",
-        "Goal: Prove that supply chain bottlenecks act as a leading indicator for consumer inflation.",
-        "Data Sources: Federal Reserve (CPI) and NY Fed (Global Supply Chain Pressure Index).",
-        "Deliverables: Data pipeline, statistical proofs, and an interactive ML dashboard."
-    ])
+    # Slide 1: Introduction
+    slide = prs.slides.add_slide(bullet_slide_layout)
+    title_shape = slide.shapes.title
+    body_shape = slide.placeholders[1]
+    title_shape.text = "Introduction & Goal"
+    tf = body_shape.text_frame
+    tf.text = "The modern global economy is highly interconnected."
+    p = tf.add_paragraph()
+    p.text = "Goal: Investigate if supply chain bottlenecks act as a leading indicator for consumer inflation."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "Data Sources: Federal Reserve (CPI) and NY Fed (GSCPI)."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "Deliverables: Data pipeline, statistical proofs, and an interactive ML dashboard."
+    p.level = 1
 
-    # Slide 3: Background & Analogy
-    add_slide_with_content("Background: The 'Traffic Jam' Analogy", [
-        "When an accident occurs (supply chain shock), traffic doesn't stop immediately miles back.",
-        "It takes time for the ripple effect to hit the cars behind (the consumers).",
-        "In economics, a shipping delay takes 1-6 months to cause price hikes in retail stores.",
-        "This delay creates a window where we can predict future inflation before it happens."
-    ])
+    # Slide 2: Background Research & Analogy
+    slide = prs.slides.add_slide(bullet_slide_layout)
+    title_shape = slide.shapes.title
+    body_shape = slide.placeholders[1]
+    title_shape.text = "Background & Analogy"
+    tf = body_shape.text_frame
+    tf.text = "Analogy: A traffic jam on a highway."
+    p = tf.add_paragraph()
+    p.text = "When an accident occurs (supply chain shock), traffic doesn't stop immediately miles back."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "It takes time for the ripple effect to hit the cars behind (the consumers)."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "A shipping delay takes 1-6 months to cause price hikes in US stores."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "This delay creates a window to predict future inflation."
+    p.level = 1
 
-    # Slide 4: Methodology
-    add_slide_with_content("Methodology & Architecture", [
-        "1. Automated Data Engineering Pipeline: Fetches live data via APIs.",
-        "2. Statistical Proof (Granger Causality): Confirmed GSCPI changes precede CPI changes.",
-        "3. Machine Learning Forecasting (VAR Model): Predicts inflation 6 months out.",
-        "4. MLOps: Dockerized Streamlit app with GitHub Actions for automated updates."
-    ])
+    # Slide 3: Methodology
+    slide = prs.slides.add_slide(bullet_slide_layout)
+    title_shape = slide.shapes.title
+    body_shape = slide.placeholders[1]
+    title_shape.text = "Methodology & Architecture"
+    tf = body_shape.text_frame
+    tf.text = "1. Automated Data Engineering Pipeline"
+    p = tf.add_paragraph()
+    p.text = "Python scripts fetch live data via APIs and normalize dates."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "2. Statistical Proof (Granger Causality)"
+    p = tf.add_paragraph()
+    p.text = "Statistically proved that GSCPI changes precede CPI changes (p-values < 0.05)."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "3. ML Forecasting (VAR Model)"
+    p = tf.add_paragraph()
+    p.text = "Vector Autoregression predicts inflation 6 months into the future."
+    p.level = 1
 
-    # Slide 5: Conclusion
-    add_slide_with_content("Conclusion & Business Impact", [
-        "Physical goods (Vehicles, Food) react violently to supply shocks.",
-        "Business Impact: Companies can adjust pricing strategies months before inflation hits their P&L.",
-        "This architecture demonstrates full-stack data capabilities from engineering to machine learning."
-    ])
+    # Slide 4: Conclusion
+    slide = prs.slides.add_slide(bullet_slide_layout)
+    title_shape = slide.shapes.title
+    body_shape = slide.placeholders[1]
+    title_shape.text = "Conclusion & Impact"
+    tf = body_shape.text_frame
+    tf.text = "Supply chains are mathematical predictors of inflation."
+    p = tf.add_paragraph()
+    p.text = "Physical goods (Vehicles, Food) react violently to supply shocks."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "Business Impact:"
+    p.level = 0
+    p = tf.add_paragraph()
+    p.text = "Companies can adjust pricing strategies months before inflation hits their P&L."
+    p.level = 1
+    p = tf.add_paragraph()
+    p.text = "Demonstrates full-stack data capabilities from engineering to machine learning."
+    p.level = 1
 
     # Save
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    output_path = os.path.join(base_dir, "Project_Presentation_Client_Ready.pptx")
+    output_path = os.path.join(base_dir, "Supply_Chain_Presentation.pptx")
     prs.save(output_path)
     print(f"Presentation saved to {output_path}")
 
