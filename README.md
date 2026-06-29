@@ -30,6 +30,8 @@ graph TD;
     D -.->|Live Connection URL| J[Power BI Desktop];
 ```
 
+![Data Pipeline Architecture](docs/architecture.png)
+
 1. **Automated Data Sourcing:** 
    * Fetches real-time, granular CPI sub-indices directly from the Federal Reserve Economic Data (FRED) API.
    * Fetches the GSCPI directly from the New York Federal Reserve.
