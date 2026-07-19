@@ -1,101 +1,134 @@
+"""
+data_pipeline.py
+Fetches live CPI (FRED) and GSCPI (NY Fed) data, merges them,
+computes YoY inflation and lagged correlations, then saves to CSV.
+"""
+
 import os
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 def setup_directories():
-    import os
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    os.makedirs(os.path.join(base_dir, "data", "raw"), exist_ok=True)
-    os.makedirs(os.path.join(base_dir, "data", "processed"), exist_ok=True)
+    for sub in ("data/raw", "data/processed"):
+        os.makedirs(os.path.join(BASE_DIR, sub), exist_ok=True)
 
-def fetch_cpi_data(start_date, end_date):
-    # Fetch US Consumer Price Index series directly from FRED CSV endpoint.
-    series_ids = {
-        'CPIAUCSL': 'cpi',
-        'CPIUFDSL': 'cpi_food',
-        'CPIENGSL': 'cpi_energy',
-        'CUSR0000SETA02': 'cpi_vehicles',
-        'CPILFESL': 'cpi_core'
-    }
-    
-    cpi_df = pd.DataFrame()
-    for series, name in series_ids.items():
-        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
-        temp_df = pd.read_csv(url)
-        temp_df.rename(columns={'observation_date': 'date', series: name}, inplace=True)
-        temp_df['date'] = pd.to_datetime(temp_df['date'])
-        
-        if cpi_df.empty:
-            cpi_df = temp_df
-        else:
-            cpi_df = pd.merge(cpi_df, temp_df, on='date', how='outer')
-            
-    cpi_data = cpi_df[(cpi_df['date'] >= start_date) & (cpi_df['date'] <= end_date)].copy()
-    
-    import os
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    cpi_data.to_csv(os.path.join(base_dir, "cpi_data.csv"), index=False)
-    return cpi_data
 
-def fetch_gscpi_data():
-    # Fetch the Global Supply Chain Pressure Index directly from the NY Fed.
-    # We skip the first few rows because they contain header descriptions.
-    url = "https://www.newyorkfed.org/medialibrary/research/interactives/gscpi/downloads/gscpi_data.xlsx"
-    gscpi_data = pd.read_excel(url, sheet_name='GSCPI Monthly Data', skiprows=4)
-    
-    # Rename columns to standard names.
-    gscpi_data.rename(columns={'Unnamed: 0': 'date', 'Unnamed: 1': 'gscpi'}, inplace=True)
-    
-    # Keep only date and index columns.
-    gscpi_data = gscpi_data[['date', 'gscpi']]
-    
-    # Drop rows with empty dates.
-    gscpi_data.dropna(subset=['date'], inplace=True)
-    
-    # Ensure dates are datetime objects.
-    gscpi_data['date'] = pd.to_datetime(gscpi_data['date'])
-    import os
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    gscpi_data.to_csv(os.path.join(base_dir, "gscpi_data.csv"), index=False)
-    
-    return gscpi_data
+# ── CPI (headline + sub-indices) ──────────────────────────────────────────────
 
-def process_data(cpi_df, gscpi_df):
-    # Normalize dates to the first of the month for proper merging.
-    cpi_df['date'] = cpi_df['date'].dt.to_period('M').dt.to_timestamp()
-    gscpi_df['date'] = gscpi_df['date'].dt.to_period('M').dt.to_timestamp()
-    
-    # Merge datasets on the date column.
-    merged_df = pd.merge(cpi_df, gscpi_df, on='date', how='inner')
-    
-    # Calculate Year-over-Year (YoY) percentage change for all CPI columns
-    cpi_cols = ['cpi', 'cpi_food', 'cpi_energy', 'cpi_vehicles', 'cpi_core']
-    for col in cpi_cols:
-        merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce')
-        merged_df[f'{col}_yoy'] = merged_df[col].pct_change(periods=12) * 100
-        
-    merged_df.dropna(inplace=True)
-    
-    import os
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    output_path = os.path.join(base_dir, "merged_data_for_bi.csv")
-    merged_df.to_csv(output_path, index=False)
-    print(f"Data processed and saved to {output_path}")
-    return merged_df
+CPI_SERIES = {
+    "cpi_all":       "CPIAUCSL",   # All items
+    "cpi_core":      "CPILFESL",   # Core (ex food & energy)
+    "cpi_food":      "CPIUFDSL",   # Food at home
+    "cpi_energy":    "CPIENGSL",   # Energy
+    "cpi_vehicles":  "CUSR0000SETA02",  # Used vehicles
+    "cpi_shelter":   "CUSR0000SAH1",    # Shelter
+}
+
+FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
+
+
+def fetch_cpi_data(start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    """Download all CPI sub-index series from FRED and merge on date."""
+    frames = []
+    for col, series_id in CPI_SERIES.items():
+        url = FRED_BASE.format(series_id)
+        print(f"  Fetching {col} ({series_id})…")
+        df = pd.read_csv(url, parse_dates=["observation_date"])
+        df.rename(columns={"observation_date": "date", series_id: col}, inplace=True)
+        df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
+        frames.append(df.set_index("date"))
+
+    merged = pd.concat(frames, axis=1).reset_index()
+    merged.to_csv(os.path.join(BASE_DIR, "cpi_data.csv"), index=False)
+    print(f"  Saved {len(merged)} rows to cpi_data.csv")
+    return merged
+
+
+# ── GSCPI ─────────────────────────────────────────────────────────────────────
+
+GSCPI_URL = (
+    "https://www.newyorkfed.org/medialibrary/research/interactives/"
+    "gscpi/downloads/gscpi_data.xlsx"
+)
+
+
+def fetch_gscpi_data() -> pd.DataFrame:
+    """Download the Global Supply Chain Pressure Index from the NY Fed."""
+    import requests, io
+    print("  Fetching GSCPI from NY Fed…")
+    resp = requests.get(GSCPI_URL, timeout=30)
+    resp.raise_for_status()
+    # NY Fed serves old .xls binary format despite the .xlsx extension.
+    # Sheet name changed from 'GSCPI_data' to 'GSCPI Monthly Data' in 2025.
+    df = pd.read_excel(
+        io.BytesIO(resp.content),
+        sheet_name="GSCPI Monthly Data",
+        skiprows=4,
+        engine="xlrd",
+        header=0,
+    )
+    # Two unnamed columns: date and GSCPI value
+    df.columns = ["date", "gscpi"]
+    df = df[["date", "gscpi"]].dropna(subset=["date"])
+    df["date"] = pd.to_datetime(df["date"])
+    df.to_csv(os.path.join(BASE_DIR, "gscpi_data.csv"), index=False)
+    print(f"  Saved {len(df)} rows to gscpi_data.csv")
+    return df
+
+
+# ── Process & merge ───────────────────────────────────────────────────────────
+
+def process_data(cpi_df: pd.DataFrame, gscpi_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge CPI and GSCPI, compute YoY changes for every CPI series,
+    and add lagged GSCPI columns (1, 3, 6, 12 months).
+    CPI dates are month-start; GSCPI dates are month-end.
+    Normalize both to month-start (MS) before merging.
+    """
+    cpi_df   = cpi_df.copy()
+    gscpi_df = gscpi_df.copy()
+    cpi_df["date"]   = cpi_df["date"].dt.to_period("M").dt.to_timestamp()
+    gscpi_df["date"] = gscpi_df["date"].dt.to_period("M").dt.to_timestamp()
+    merged = pd.merge(cpi_df, gscpi_df, on="date", how="inner").sort_values("date")
+
+    # YoY % change for every CPI series
+    for col in CPI_SERIES:
+        if col in merged.columns:
+            merged[f"{col}_yoy"] = merged[col].pct_change(periods=12) * 100
+
+    # Lagged GSCPI
+    for lag in (1, 3, 6, 12):
+        merged[f"gscpi_lag{lag}"] = merged["gscpi"].shift(lag)
+
+    out = os.path.join(BASE_DIR, "merged_data_for_bi.csv")
+    merged.to_csv(out, index=False)
+    print(f"  Saved merged dataset ({len(merged)} rows) -> {out}")
+    return merged
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     setup_directories()
-    
-    start_time = datetime(2000, 1, 1)
-    end_time = datetime.now()
-    
-    print("Fetching CPI data...")
-    cpi_df = fetch_cpi_data(start_time, end_time)
-    
-    print("Fetching GSCPI data...")
+
+    start = datetime(2000, 1, 1)
+    end   = datetime.now()
+
+    print("Fetching CPI data…")
+    cpi_df   = fetch_cpi_data(start, end)
+
+    print("Fetching GSCPI data…")
     gscpi_df = fetch_gscpi_data()
-    
-    print("Processing and merging data...")
-    final_df = process_data(cpi_df, gscpi_df)
-    
-    print("Pipeline complete.")
+
+    print("Processing and merging data…")
+    final    = process_data(cpi_df, gscpi_df)
+
+    print(f"\nPipeline complete. {len(final)} rows, {len(final.columns)} columns.")
+    if len(final) > 0:
+        print(f"Date range: {final['date'].min().date()} -> {final['date'].max().date()}")
+    else:
+        print("Warning: merged dataset is empty — check date alignment.")

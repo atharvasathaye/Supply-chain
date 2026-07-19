@@ -1,151 +1,332 @@
+"""
+app.py  —  Supply Chain Pressure vs. Macroeconomic Inflation Dashboard
+Upgraded July 2026: sub-indices, Granger causality, VAR forecast, lagged correlation.
+"""
+
+import os
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
-import os
+import plotly.express as px
 
-st.set_page_config(page_title="Supply Chain & Inflation Tracker", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="Supply Chain & Inflation Dashboard",
+    page_icon="📦",
+    layout="wide",
+)
 
-st.markdown("""
-<style>
-    .stApp { background-color: #0E1117; color: #FAFAFA; font-family: 'Inter', sans-serif; }
-    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
-    h1 {
-        font-weight: 700; letter-spacing: -1px;
-        background: -webkit-linear-gradient(#00C9FF, #92FE9D);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    }
-    div[data-testid="metric-container"] {
-        background-color: #1E2127; border-radius: 12px; padding: 20px;
-        border: 1px solid #2D3139; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    }
-    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
-    .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; color: #A0AAB2; font-weight: 500; }
-    .stTabs [aria-selected="true"] { color: #00C9FF; border-bottom: 2px solid #00C9FF; }
-</style>
-""", unsafe_allow_html=True)
+# ── Load data ──────────────────────────────────────────────────────────────────
 
-st.title("Supply Chain Disruptions vs. Inflation")
-st.write("An interactive analysis of how global supply chain bottlenecks serve as leading indicators for consumer price inflation.")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-@st.cache_data
-def load_data():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "merged_data_for_bi.csv")
-    forecast_path = os.path.join(base_dir, "forecast_data.csv")
-    
-    if not os.path.exists(file_path):
-        return None, None
-        
-    df = pd.read_csv(file_path)
-    df['date'] = pd.to_datetime(df['date'])
-    
-    forecast_df = None
-    if os.path.exists(forecast_path):
-        forecast_df = pd.read_csv(forecast_path)
-        forecast_df['date'] = pd.to_datetime(forecast_df['date'])
-        
-    return df, forecast_df
+@st.cache_data(ttl=3600)
+def load_merged():
+    path = os.path.join(BASE_DIR, "merged_data_for_bi.csv")
+    if not os.path.exists(path):
+        return None
+    df = pd.read_csv(path, parse_dates=["date"])
+    return df.sort_values("date").reset_index(drop=True)
 
-df, forecast_df = load_data()
+@st.cache_data(ttl=3600)
+def load_forecast():
+    path = os.path.join(BASE_DIR, "forecast_data.csv")
+    if not os.path.exists(path):
+        return None
+    return pd.read_csv(path, parse_dates=["date"])
+
+df       = load_merged()
+fc_df    = load_forecast()
 
 if df is None:
-    st.error("Data missing. Please run `python data_pipeline.py` to generate the dataset.")
+    st.error("Data not found. Please run `python data_pipeline.py` first.")
     st.stop()
 
-# KPIs
-latest_data = df.iloc[-1]
-prev_data = df.iloc[-2]
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 
-gscpi_latest = latest_data['gscpi']
-gscpi_change = gscpi_latest - prev_data['gscpi']
-cpi_latest = latest_data['cpi_yoy']
-cpi_change = cpi_latest - prev_data['cpi_yoy']
+st.sidebar.title("Controls")
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric(label="Global Supply Chain Pressure", value=f"{gscpi_latest:.2f} SD", delta=f"{gscpi_change:.2f} vs last month", delta_color="inverse")
-with col2:
-    st.metric(label="US CPI Inflation (YoY)", value=f"{cpi_latest:.2f}%", delta=f"{cpi_change:.2f}% vs last month", delta_color="inverse")
-with col3:
-    st.metric(label="Data Last Updated", value=latest_data['date'].strftime('%B %Y'), delta="Live Connection")
+min_date = df["date"].min().to_pydatetime()
+max_date = df["date"].max().to_pydatetime()
 
-st.markdown("---")
+start_date, end_date = st.sidebar.slider(
+    "Date range",
+    min_value=min_date,
+    max_value=max_date,
+    value=(min_date, max_date),
+)
 
-tab1, tab2, tab3, tab4 = st.tabs(["Historical Trends", "Interactive Lag Analysis", "Sector Breakdown", "ML Forecast"])
+cpi_options = {
+    "All Items (headline)": "cpi_all_yoy",
+    "Core (ex food & energy)": "cpi_core_yoy",
+    "Food at home": "cpi_food_yoy",
+    "Energy": "cpi_energy_yoy",
+    "Used vehicles": "cpi_vehicles_yoy",
+    "Shelter": "cpi_shelter_yoy",
+}
+selected_cpi_label = st.sidebar.selectbox("CPI sub-index", list(cpi_options.keys()))
+selected_cpi_col   = cpi_options[selected_cpi_label]
+
+show_forecast = st.sidebar.toggle("Show VAR forecast overlay", value=True)
+
+filt = df[(df["date"] >= start_date) & (df["date"] <= end_date)].copy()
+
+# ── Header ─────────────────────────────────────────────────────────────────────
+
+st.title("📦 Supply Chain Pressure vs. Inflation")
+st.caption(
+    f"Data: FRED CPI + NY Fed GSCPI · Last updated: {df['date'].max().strftime('%B %Y')}"
+)
+
+# ── KPI row ────────────────────────────────────────────────────────────────────
+
+col1, col2, col3, col4 = st.columns(4)
+
+corr_now  = filt["gscpi"].corr(filt[selected_cpi_col])
+corr_lag3 = filt["gscpi"].shift(3).corr(filt[selected_cpi_col])
+latest_gscpi = df["gscpi"].iloc[-1]
+latest_cpi   = df[selected_cpi_col].iloc[-1] if selected_cpi_col in df.columns else np.nan
+
+col1.metric("Current GSCPI", f"{latest_gscpi:.2f} σ",
+            delta=f"{latest_gscpi - df['gscpi'].iloc[-13]:.2f} vs 1y ago")
+col2.metric(f"Current {selected_cpi_label[:18]}", f"{latest_cpi:.1f}%",
+            delta=f"{latest_cpi - df[selected_cpi_col].iloc[-13]:.1f} pp vs 1y ago"
+            if selected_cpi_col in df.columns else "")
+col3.metric("Contemporaneous correlation", f"{corr_now:.3f}")
+col4.metric("3-month lag correlation", f"{corr_lag3:.3f}",
+            delta="stronger" if abs(corr_lag3) > abs(corr_now) else "weaker")
+
+st.divider()
+
+# ── Tab layout ─────────────────────────────────────────────────────────────────
+
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📈 Historical comparison",
+    "🔗 Lagged correlations",
+    "📐 Granger causality",
+    "🔭 VAR forecast",
+])
+
+# ── Tab 1: Historical comparison ───────────────────────────────────────────────
 
 with tab1:
-    st.subheader("Macroeconomic Overview")
+    st.subheader("GSCPI vs. CPI Inflation — dual axis")
+
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df['date'], y=df['gscpi'], name='Supply Chain Pressure', line=dict(color='#00C9FF', width=3), fill='tozeroy', fillcolor='rgba(0, 201, 255, 0.1)', yaxis='y1'))
-    fig.add_trace(go.Scatter(x=df['date'], y=df['cpi_yoy'], name='CPI Inflation (%)', line=dict(color='#FF0055', width=3, dash='dot'), yaxis='y2'))
+    fig.add_trace(go.Scatter(
+        x=filt["date"], y=filt["gscpi"],
+        name="GSCPI (σ)", mode="lines",
+        line=dict(color="#4f8ef7", width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=filt["date"], y=filt[selected_cpi_col],
+        name=f"{selected_cpi_label} YoY (%)", mode="lines",
+        line=dict(color="#f97316", width=2, dash="dot"),
+        yaxis="y2",
+    ))
+
+    if show_forecast and fc_df is not None:
+        fig.add_trace(go.Scatter(
+            x=fc_df["date"], y=fc_df["cpi_yoy_forecast"],
+            name="CPI forecast (VAR)", mode="lines",
+            line=dict(color="#f97316", width=1.5, dash="longdash"),
+            yaxis="y2",
+        ))
+        fig.add_trace(go.Scatter(
+            x=fc_df["date"], y=fc_df["gscpi_forecast"],
+            name="GSCPI forecast (VAR)", mode="lines",
+            line=dict(color="#4f8ef7", width=1.5, dash="longdash"),
+        ))
 
     fig.update_layout(
-        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#FAFAFA'), hovermode='x unified',
-        xaxis=dict(showgrid=False, showline=True, linecolor='#2D3139', title='Date'),
-        yaxis=dict(showgrid=True, gridcolor='#2D3139', title='GSCPI (SD)'),
-        yaxis2=dict(showgrid=False, title='CPI YoY (%)', overlaying='y', side='right'),
-        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5), margin=dict(l=0, r=0, t=60, b=0)
+        xaxis=dict(title="Date"),
+        yaxis=dict(title="GSCPI (standard deviations)", side="left",  showgrid=False),
+        yaxis2=dict(title="CPI YoY (%)",                side="right", overlaying="y", showgrid=False),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=480,
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    st.caption(
+        "Dashed lines show 12-month VAR model forecast. "
+        "GSCPI spikes typically lead CPI by 3–6 months."
+    )
+
+    # Sub-index comparison
+    st.subheader("CPI sub-index breakdown")
+    sub_cols = [c for c in ["cpi_all_yoy","cpi_core_yoy","cpi_food_yoy","cpi_energy_yoy","cpi_vehicles_yoy","cpi_shelter_yoy"] if c in filt.columns]
+    fig2 = go.Figure()
+    colours = ["#4f8ef7","#7dd3a8","#f97316","#c084fc","#f43f5e","#facc15"]
+    labels  = ["All items","Core","Food","Energy","Used vehicles","Shelter"]
+    for col, lab, clr in zip(sub_cols, labels, colours):
+        fig2.add_trace(go.Scatter(x=filt["date"], y=filt[col], name=lab, mode="lines", line=dict(color=clr)))
+    fig2.update_layout(xaxis_title="Date", yaxis_title="YoY %", hovermode="x unified", height=380)
+    st.plotly_chart(fig2, use_container_width=True)
+
+# ── Tab 2: Lagged correlations ─────────────────────────────────────────────────
+
 with tab2:
-    st.subheader("Leading Indicator Analysis")
-    lag_months = st.slider("Shift Supply Chain Data Forward (Months)", min_value=0, max_value=12, value=3, step=1)
-    
-    lag_df = df.copy()
-    lag_df['gscpi_lagged'] = lag_df['gscpi'].shift(lag_months)
-    lag_df.dropna(inplace=True)
-    
-    lag_fig = go.Figure()
-    lag_fig.add_trace(go.Scatter(x=lag_df['date'], y=lag_df['gscpi_lagged'], name=f'GSCPI (Shifted {lag_months} mo)', line=dict(color='#00C9FF', width=2)))
-    lag_fig.add_trace(go.Scatter(x=lag_df['date'], y=lag_df['cpi_yoy'], name='CPI Inflation (%)', line=dict(color='#FF0055', width=2)))
-    
-    lag_fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#FAFAFA'), hovermode='x unified', xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#2D3139'))
-    st.plotly_chart(lag_fig, use_container_width=True)
-    st.info(f"**Statistical Correlation at {lag_months} month lag:** {lag_df['gscpi_lagged'].corr(lag_df['cpi_yoy']):.2f}")
+    st.subheader("Cross-correlation: GSCPI(t-lag) → CPI(t)")
+    st.write(
+        "Shows how strongly supply chain pressure at time **t − lag** correlates with "
+        "inflation at time **t**. A peak at lag > 0 means GSCPI leads CPI."
+    )
+
+    max_lag = st.slider("Max lag (months)", 6, 24, 18)
+    rows = []
+    cpi_s   = filt[selected_cpi_col].dropna()
+    gscpi_s = filt["gscpi"]
+    for lag in range(0, max_lag + 1):
+        shifted = gscpi_s.shift(lag).loc[cpi_s.index]
+        mask    = cpi_s.notna() & shifted.notna()
+        r       = cpi_s[mask].corr(shifted[mask])
+        rows.append({"Lag (months)": lag, "Pearson r": round(r, 4)})
+    lc_df = pd.DataFrame(rows)
+
+    best_lag = int(lc_df.loc[lc_df["Pearson r"].abs().idxmax(), "Lag (months)"])
+    best_r   = lc_df.loc[lc_df["Pearson r"].abs().idxmax(), "Pearson r"]
+
+    st.info(f"Peak correlation: **r = {best_r:.3f}** at **lag = {best_lag} months**")
+
+    fig3 = px.bar(
+        lc_df, x="Lag (months)", y="Pearson r",
+        color="Pearson r",
+        color_continuous_scale=["#1e3a6e","#4f8ef7","#7dd3a8"],
+        range_color=[-1, 1],
+    )
+    fig3.update_layout(height=360, coloraxis_showscale=False)
+    st.plotly_chart(fig3, use_container_width=True)
+
+    scatter_lag = st.slider("Select lag for scatter plot", 0, max_lag, best_lag)
+    filt2 = filt.copy()
+    filt2["gscpi_lagged"] = filt2["gscpi"].shift(scatter_lag)
+    fig4 = px.scatter(
+        filt2.dropna(subset=["gscpi_lagged", selected_cpi_col]),
+        x="gscpi_lagged", y=selected_cpi_col, trendline="ols",
+        labels={"gscpi_lagged": f"GSCPI (t-{scatter_lag}m)", selected_cpi_col: f"{selected_cpi_label} YoY (%)"},
+        opacity=0.6,
+    )
+    fig4.update_layout(height=380)
+    st.plotly_chart(fig4, use_container_width=True)
+
+# ── Tab 3: Granger causality ───────────────────────────────────────────────────
 
 with tab3:
-    st.subheader("Inflation by Economic Sector")
-    st.write("Which sectors are most volatile when supply chains break down?")
-    
-    if 'cpi_food_yoy' in df.columns:
-        sec_fig = go.Figure()
-        sectors = {
-            'cpi_food_yoy': ('Food', '#2ECC71'),
-            'cpi_energy_yoy': ('Energy', '#E74C3C'),
-            'cpi_vehicles_yoy': ('Used Cars & Trucks', '#F39C12'),
-            'cpi_core_yoy': ('Core CPI (No Food/Energy)', '#9B59B6')
-        }
-        for col, (name, color) in sectors.items():
-            sec_fig.add_trace(go.Scatter(x=df['date'], y=df[col], name=name, line=dict(color=color, width=2)))
-            
-        sec_fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#FAFAFA'), hovermode='x unified', xaxis=dict(showgrid=False), yaxis=dict(title='YoY Inflation (%)', showgrid=True, gridcolor='#2D3139'))
-        st.plotly_chart(sec_fig, use_container_width=True)
-    else:
-        st.warning("Sector data not available. Please run the updated pipeline.")
+    st.subheader("Granger Causality Test — Does GSCPI predict CPI?")
+    st.write(
+        "Tests the null hypothesis that GSCPI does **not** Granger-cause CPI inflation. "
+        "p < 0.05 means GSCPI has statistically significant predictive power at that lag."
+    )
+
+    try:
+        from statistical_analysis import run_granger, stationarity_test
+        gc_df = run_granger(filt)
+
+        sig_lags = gc_df[gc_df["significant"]]["lag_months"].tolist()
+        if sig_lags:
+            st.success(f"GSCPI significantly Granger-causes CPI at lags: **{sig_lags}** months (p < 0.05)")
+        else:
+            st.warning("No significant Granger causality found in the selected date range.")
+
+        fig5 = px.bar(
+            gc_df, x="lag_months", y="p_value_F",
+            color="significant",
+            color_discrete_map={True: "#4f8ef7", False: "#334155"},
+            labels={"lag_months": "Lag (months)", "p_value_F": "p-value (F-test)", "significant": "p < 0.05"},
+        )
+        fig5.add_hline(y=0.05, line_dash="dot", line_color="#f97316", annotation_text="p = 0.05")
+        fig5.update_layout(height=360)
+        st.plotly_chart(fig5, use_container_width=True)
+
+        # Stationarity table
+        st.subheader("ADF Stationarity Tests")
+        adf_rows = []
+        for col in ["cpi_all_yoy", "gscpi"]:
+            if col in filt.columns:
+                adf_rows.append(stationarity_test(filt[col], col))
+        st.dataframe(pd.DataFrame(adf_rows), use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Could not run Granger test: {e}")
+        st.info("Make sure `statistical_analysis.py` and `statsmodels` are installed.")
+
+# ── Tab 4: VAR forecast ────────────────────────────────────────────────────────
 
 with tab4:
-    st.subheader("Machine Learning Forecast (VAR Model)")
-    st.write("Using a Vector Autoregression (VAR) model trained on historical supply chain and CPI data to forecast the next 6 months of inflation.")
-    
-    if forecast_df is not None:
-        fc_fig = go.Figure()
-        
-        # Plot last 3 years of actuals
-        recent_df = df.tail(36)
-        fc_fig.add_trace(go.Scatter(x=recent_df['date'], y=recent_df['cpi_yoy'], name='Actual Inflation (%)', line=dict(color='#FAFAFA', width=3)))
-        
-        # Connect actuals to forecast seamlessly
-        connect_df = pd.DataFrame({'date': [recent_df['date'].iloc[-1], forecast_df['date'].iloc[0]], 'cpi_yoy': [recent_df['cpi_yoy'].iloc[-1], forecast_df['cpi_yoy_forecast'].iloc[0]]})
-        fc_fig.add_trace(go.Scatter(x=connect_df['date'], y=connect_df['cpi_yoy'], name='_connect', line=dict(color='#00C9FF', width=3, dash='dash'), showlegend=False))
-        
-        # Plot forecast
-        fc_fig.add_trace(go.Scatter(x=forecast_df['date'], y=forecast_df['cpi_yoy_forecast'], name='Forecasted Inflation (%)', line=dict(color='#00C9FF', width=3, dash='dash')))
-        
-        fc_fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#FAFAFA'), hovermode='x unified', xaxis=dict(showgrid=False), yaxis=dict(title='CPI YoY (%)', showgrid=True, gridcolor='#2D3139'))
-        st.plotly_chart(fc_fig, use_container_width=True)
-        
-        # Show data table for exact numbers
-        st.dataframe(forecast_df[['date', 'cpi_yoy_forecast']].rename(columns={'date': 'Month', 'cpi_yoy_forecast': 'Predicted YoY Inflation (%)'}), hide_index=True)
+    st.subheader("VAR Model — 12-month Inflation Forecast")
+    st.write(
+        "A Vector Autoregression (VAR) model jointly models GSCPI and CPI inflation, "
+        "exploiting their lead-lag relationship to forecast ahead."
+    )
+
+    if fc_df is not None:
+        hist_tail = df.tail(36)[["date", "gscpi", "cpi_all_yoy"]].copy()
+
+        fig6 = go.Figure()
+        fig6.add_trace(go.Scatter(
+            x=hist_tail["date"], y=hist_tail["cpi_all_yoy"],
+            name="CPI YoY (actual)", mode="lines",
+            line=dict(color="#f97316", width=2),
+        ))
+        fig6.add_trace(go.Scatter(
+            x=fc_df["date"], y=fc_df["cpi_yoy_forecast"],
+            name="CPI YoY (VAR forecast)", mode="lines+markers",
+            line=dict(color="#f97316", width=2, dash="dash"),
+        ))
+        fig6.add_trace(go.Scatter(
+            x=hist_tail["date"], y=hist_tail["gscpi"],
+            name="GSCPI (actual)", mode="lines",
+            line=dict(color="#4f8ef7", width=2),
+            yaxis="y2",
+        ))
+        fig6.add_trace(go.Scatter(
+            x=fc_df["date"], y=fc_df["gscpi_forecast"],
+            name="GSCPI (VAR forecast)", mode="lines+markers",
+            line=dict(color="#4f8ef7", width=2, dash="dash"),
+            yaxis="y2",
+        ))
+        fig6.update_layout(
+            xaxis_title="Date",
+            yaxis=dict(title="CPI YoY (%)",  side="left",  showgrid=False),
+            yaxis2=dict(title="GSCPI (σ)", side="right", overlaying="y", showgrid=False),
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=480,
+        )
+        st.plotly_chart(fig6, use_container_width=True)
+
+        st.subheader("Forecast table")
+        fc_display = fc_df.copy()
+        fc_display["date"] = fc_display["date"].dt.strftime("%b %Y")
+        st.dataframe(fc_display.rename(columns={
+            "date": "Month",
+            "cpi_yoy_forecast": "CPI YoY forecast (%)",
+            "gscpi_forecast": "GSCPI forecast (σ)",
+        }), use_container_width=True)
     else:
-        st.warning("Forecast data missing. Please run `python forecast_model.py`.")
+        st.info("Run `python statistical_analysis.py` to generate forecast_data.csv, then reload the app.")
+        if st.button("Generate forecast now"):
+            try:
+                from statistical_analysis import load_merged, run_var_forecast
+                merged = load_merged()
+                run_var_forecast(merged)
+                st.success("Forecast generated! Reload the page.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+# ── Download ───────────────────────────────────────────────────────────────────
+
+st.divider()
+st.subheader("Export data")
+col_a, col_b = st.columns(2)
+
+with col_a:
+    csv = filt.to_csv(index=False).encode("utf-8")
+    st.download_button("Download filtered dataset (CSV)", csv,
+                       "supply_chain_filtered.csv", "text/csv")
+with col_b:
+    if fc_df is not None:
+        fc_csv = fc_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download VAR forecast (CSV)", fc_csv,
+                           "supply_chain_forecast.csv", "text/csv")
