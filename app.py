@@ -120,6 +120,14 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 with tab1:
     st.subheader("GSCPI vs. CPI inflation")
+    st.write(
+        "The blue line is the Global Supply Chain Pressure Index, measured in standard "
+        "deviations from its historical average. When it spikes — as it did during "
+        "COVID-era shipping bottlenecks — it tends to show up in consumer prices a few "
+        "months later. The red line is year-over-year CPI inflation for whichever "
+        "sub-index you have selected in the sidebar. Use the date slider to zoom into "
+        "specific periods."
+    )
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -159,6 +167,12 @@ with tab1:
     st.caption("Dashed lines are the 12-month VAR forecast. GSCPI typically leads CPI by 3–6 months.")
 
     st.subheader("CPI sub-indices")
+    st.write(
+        "Not all prices move together. Energy and used vehicles are the most volatile "
+        "and tend to react first when supply chains tighten. Core CPI strips those out "
+        "and moves more slowly. Shelter is largely driven by the housing market and "
+        "often lags the others by a year or more."
+    )
     sub_cols = [
         c for c in [
             "cpi_all_yoy", "cpi_core_yoy", "cpi_food_yoy",
@@ -188,10 +202,15 @@ with tab1:
 # Tab 2 — Lagged correlations
 
 with tab2:
-    st.subheader("Cross-correlation: GSCPI(t - lag) vs CPI(t)")
+    st.subheader("Lagged correlation")
     st.write(
-        "Pearson correlation between supply chain pressure at time t minus lag "
-        "and inflation at time t. A peak above zero means GSCPI leads CPI."
+        "This answers a simple question: if supply chains were stressed X months ago, "
+        "how well does that predict inflation today? Each bar shows the correlation "
+        "between GSCPI at some point in the past and CPI now. A bar at lag 10, for "
+        "example, means supply chain pressure from 10 months ago correlates with "
+        "today's prices. The taller the bar, the stronger the relationship at that "
+        "lag. The scatter plot below lets you pick any lag and see each individual "
+        "month plotted against each other."
     )
 
     max_lag = st.slider("Max lag (months)", 6, 24, 18)
@@ -239,10 +258,14 @@ with tab2:
 # Tab 3 — Granger causality
 
 with tab3:
-    st.subheader("Granger causality: does GSCPI predict CPI?")
+    st.subheader("Granger causality")
     st.write(
-        "Tests the null hypothesis that GSCPI does not Granger-cause CPI. "
-        "p < 0.05 means GSCPI adds statistically significant predictive information at that lag."
+        "Correlation alone does not tell you which series drives the other. Granger "
+        "causality is a statistical test that asks: does knowing past GSCPI values "
+        "help predict future CPI, beyond what CPI alone would tell you? If the "
+        "p-value for a given lag is below 0.05 (the red dotted line), the answer is "
+        "yes — GSCPI at that lag adds real predictive power. Bars above the line are "
+        "not statistically meaningful."
     )
 
     try:
@@ -288,11 +311,14 @@ with tab3:
 # Tab 4 — VAR forecast
 
 with tab4:
-    st.subheader("VAR forecast — 12 months ahead")
+    st.subheader("12-month forecast")
     st.write(
-        "A Vector Autoregression model fitted on GSCPI and CPI inflation jointly. "
-        "The lag order is selected by AIC. Forecast is generated from the last "
-        "observed values and reversed out of first-difference space."
+        "A Vector Autoregression (VAR) model is fitted on both GSCPI and CPI "
+        "together, so each series can inform the forecast of the other. The model "
+        "picks how many months back to look based on which configuration fits the "
+        "historical data best. The dashed section of each line is the forecast — "
+        "treat it as a reasonable trajectory given current supply chain conditions, "
+        "not a precise prediction. The table below shows the month-by-month numbers."
     )
 
     if fc_df is not None:
